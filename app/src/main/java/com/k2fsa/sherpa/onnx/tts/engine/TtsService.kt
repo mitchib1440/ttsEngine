@@ -1,7 +1,10 @@
 package com.k2fsa.sherpa.onnx.tts.engine
 
+import android.content.BroadcastReceiver
 import android.content.Intent
 import android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+import android.content.IntentFilter
+import android.os.Build
 import android.media.AudioFormat
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
@@ -11,9 +14,21 @@ import android.util.Log
 
 
 class TtsService : TextToSpeechService() {
+    private lateinit var pronunciationRulesRepository: PronunciationRulesRepository
+    private val rulesUpdatedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: Intent?) {
+            if (intent?.action == PronunciationRulesRepository.ACTION_RULES_UPDATED) {
+                reloadPronunciationRules()
+            }
+        }
+    }
+
     override fun onCreate() {
         Log.i(TAG, "onCreate tts service")
         super.onCreate()
+        pronunciationRulesRepository = PronunciationRulesRepository(this)
+        reloadPronunciationRules()
+        registerRulesReceiver()
 
         // see https://github.com/Miserlou/Android-SDK-Samples/blob/master/TtsEngine/src/com/example/android/ttsengine/RobotSpeakTtsService.java#L68
         onLoadLanguage(TtsEngine.lang, "", "")
@@ -21,6 +36,7 @@ class TtsService : TextToSpeechService() {
 
     override fun onDestroy() {
         Log.i(TAG, "onDestroy tts service")
+        unregisterReceiver(rulesUpdatedReceiver)
         super.onDestroy()
     }
 
@@ -64,6 +80,20 @@ class TtsService : TextToSpeechService() {
 
     override fun onStop() {}
 
+    private fun registerRulesReceiver() {
+        val filter = IntentFilter(PronunciationRulesRepository.ACTION_RULES_UPDATED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(rulesUpdatedReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(rulesUpdatedReceiver, filter)
+        }
+    }
+
+    private fun reloadPronunciationRules() {
+        val rules = pronunciationRulesRepository.loadRules()
+        TextNormalizer.replaceRules(rules)
+    }
+
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (TtsEngine.tts == null || request == null || callback == null) {
             return
@@ -83,6 +113,7 @@ class TtsService : TextToSpeechService() {
         var text = request.charSequenceText.toString()
 
         if (preferenceHelper.getStripSSML()) text = TtsEngine.stripSsmlTags(text)
+        text = TextNormalizer.normalize(text)
 
         val ret = onIsLanguageAvailable(language, country, variant)
         if (ret == TextToSpeech.LANG_NOT_SUPPORTED) {

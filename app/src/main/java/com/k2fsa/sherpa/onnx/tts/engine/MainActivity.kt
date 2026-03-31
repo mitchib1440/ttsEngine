@@ -33,6 +33,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -44,6 +45,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -126,6 +128,9 @@ class MainActivity : ComponentActivity() {
         langDB: LangDB,
         preferenceHelper: PreferenceHelper
     ) {
+        val rulesRepository = PronunciationRulesRepository(this)
+        TextNormalizer.replaceRules(rulesRepository.loadRules())
+
         setContent {
             Surface(
                 modifier = Modifier.fillMaxSize(),
@@ -173,6 +178,10 @@ class MainActivity : ComponentActivity() {
                         val allLanguages = langDB.allInstalledLanguages
                         var currentLanguage = allLanguages.indexOfFirst { it.lang == preferenceHelper.getCurrentLanguage()!! }
                         val numSpeakers = TtsEngine.tts!!.numSpeakers()
+                        var pronunciationRules by remember { mutableStateOf(rulesRepository.loadRules()) }
+                        var showAddRuleDialog by remember { mutableStateOf(false) }
+                        var rulePatternInput by remember { mutableStateOf("") }
+                        var ruleReplacementInput by remember { mutableStateOf("") }
 
                         LazyColumn( // ✅ LazyColumn replaces Column
                             modifier = Modifier
@@ -259,6 +268,74 @@ class MainActivity : ComponentActivity() {
                                     Text(
                                         getString(R.string.strip_ssml)
                                     )
+                                }
+                            }
+
+                            item { Spacer(modifier = Modifier.height(10.dp)) }
+
+                            item {
+                                Text("Pronunciation Rules")
+                            }
+
+                            item {
+                                Button(
+                                    modifier = Modifier.padding(top = 6.dp, bottom = 8.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = colorResource(R.color.primaryDark),
+                                        contentColor = colorResource(R.color.white)
+                                    ),
+                                    onClick = {
+                                        showAddRuleDialog = true
+                                    }
+                                ) {
+                                    Text("Add Rule")
+                                }
+                            }
+
+                            if (pronunciationRules.isEmpty()) {
+                                item {
+                                    Text("No custom pronunciation rules")
+                                }
+                            }
+
+                            pronunciationRules.forEachIndexed { index, rule ->
+                                item {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(bottom = 6.dp)
+                                    ) {
+                                        Text(
+                                            text = "${getDisplayPattern(rule.pattern.pattern)} -> ${rule.replacement}",
+                                            modifier = Modifier
+                                                .fillMaxWidth(0.72f)
+                                                .padding(end = 8.dp)
+                                        )
+                                        Button(
+                                            modifier = Modifier.padding(start = 8.dp),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = colorResource(R.color.primaryDark),
+                                                contentColor = colorResource(R.color.white)
+                                            ),
+                                            onClick = {
+                                                val result = rulesRepository.deleteRuleAt(index)
+                                                if (result.isSuccess) {
+                                                    pronunciationRules = rulesRepository.loadRules()
+                                                    TextNormalizer.replaceRules(pronunciationRules)
+                                                    broadcastRulesUpdated()
+                                                } else {
+                                                    Toast.makeText(
+                                                        this@MainActivity,
+                                                        result.exceptionOrNull()?.message ?: "Failed to delete rule",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
+                                            }
+                                        ) {
+                                            Text("Delete")
+                                        }
+                                    }
                                 }
                             }
 
@@ -508,11 +585,15 @@ class MainActivity : ComponentActivity() {
                                                     }
                                                 }
 
-                                                if (preferenceHelper.getStripSSML()) sampleText = TtsEngine.stripSsmlTags(sampleText)
+                                                var textForSynthesis = sampleText
+                                                if (preferenceHelper.getStripSSML()) {
+                                                    textForSynthesis = TtsEngine.stripSsmlTags(textForSynthesis)
+                                                }
+                                                textForSynthesis = TextNormalizer.normalize(textForSynthesis)
 
                                                 CoroutineScope(Dispatchers.Default).launch {
                                                     TtsEngine.tts!!.generateWithCallback(
-                                                        text = sampleText,
+                                                        text = textForSynthesis,
                                                         sid = TtsEngine.speakerId.value,
                                                         speed = TtsEngine.speed.value,
                                                         callback = ::callback,
@@ -545,10 +626,104 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
+
+                        if (showAddRuleDialog) {
+                            AlertDialog(
+                                onDismissRequest = { showAddRuleDialog = false },
+                                title = { Text("Add Pronunciation Rule") },
+                                text = {
+                                    Box {
+                                        androidx.compose.foundation.layout.Column {
+                                            OutlinedTextField(
+                                                value = rulePatternInput,
+                                                onValueChange = { rulePatternInput = it },
+                                                label = { Text("Word/Pattern to replace") },
+                                                singleLine = true,
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            OutlinedTextField(
+                                                value = ruleReplacementInput,
+                                                onValueChange = { ruleReplacementInput = it },
+                                                label = { Text("Pronunciation") },
+                                                singleLine = true,
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                        }
+                                    }
+                                },
+                                confirmButton = {
+                                    TextButton(
+                                        onClick = {
+                                            val normalizedPattern = preparePatternForSaving(rulePatternInput)
+                                            val result = rulesRepository.addRule(normalizedPattern, ruleReplacementInput)
+                                            if (result.isSuccess) {
+                                                pronunciationRules = rulesRepository.loadRules()
+                                                TextNormalizer.replaceRules(pronunciationRules)
+                                                broadcastRulesUpdated()
+                                                rulePatternInput = ""
+                                                ruleReplacementInput = ""
+                                                showAddRuleDialog = false
+                                            } else {
+                                                Toast.makeText(
+                                                    this@MainActivity,
+                                                    result.exceptionOrNull()?.message ?: "Failed to add rule",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        }
+                                    ) { Text("Save") }
+                                },
+                                dismissButton = {
+                                    TextButton(
+                                        onClick = {
+                                            showAddRuleDialog = false
+                                        }
+                                    ) { Text("Cancel") }
+                                }
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+
+    private fun broadcastRulesUpdated() {
+        val intent = Intent(PronunciationRulesRepository.ACTION_RULES_UPDATED)
+        intent.setPackage(packageName)
+        sendBroadcast(intent)
+    }
+
+    private fun getDisplayPattern(rawPattern: String): String {
+        return rawPattern
+            .replace("(?i)\\b", "")
+            .replace("\\b", "")
+    }
+
+    private fun preparePatternForSaving(input: String): String {
+        val trimmed = input.trim()
+        if (trimmed.isEmpty()) {
+            return trimmed
+        }
+
+        if (trimmed.contains("(?i)\\b") || trimmed.contains("\\b")) {
+            return trimmed
+        }
+
+        if (isPunctuationOnlyPattern(trimmed)) {
+            return trimmed
+        }
+
+        if (Regex("^[\\p{L}\\p{N}_'\\-]+$").matches(trimmed)) {
+            return "(?i)\\b$trimmed\\b"
+        }
+
+        return trimmed
+    }
+
+    private fun isPunctuationOnlyPattern(pattern: String): Boolean {
+        return Regex("^[^\\p{L}\\p{N}\\s]+$").matches(pattern)
     }
 
     private fun deleteLang(currentLanguage: String?) {
