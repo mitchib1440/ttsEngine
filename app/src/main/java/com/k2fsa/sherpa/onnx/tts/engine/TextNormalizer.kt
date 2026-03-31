@@ -1,6 +1,8 @@
 package com.k2fsa.sherpa.onnx.tts.engine
 
 object TextNormalizer {
+    private val unsupportedLanguageBlockRegex =
+        Regex("[\\p{IsHan}\\p{IsHiragana}\\p{IsKatakana}\\p{IsHangul}]+")
 
     data class PronunciationRule(
         val pattern: Regex,
@@ -25,9 +27,14 @@ object TextNormalizer {
 
     fun normalize(input: String): String {
         var normalized = input
+        normalized = filterUnsupportedLanguages(normalized)
         normalized = applyPronunciationRules(normalized)
         normalized = sanitizePunctuation(normalized)
         return normalizeWhitespace(normalized)
+    }
+
+    fun filterUnsupportedLanguages(text: String): String {
+        return unsupportedLanguageBlockRegex.replace(text, " [Foreign text] ")
     }
 
     fun sanitizePunctuation(text: String): String {
@@ -43,9 +50,13 @@ object TextNormalizer {
         sanitized = sanitized.replace(Regex("([\\p{L}\\d])[–—]([\\p{L}\\d])"), "$1, $2")
         // Keep dramatic pause intent from ellipses.
         sanitized = sanitized.replace(Regex("\\.{2,}"), ". ")
+        // Drop redundant colons after terminal punctuation (e.g., ".:").
+        sanitized = sanitized.replace(Regex("([.!?])\\s*:"), "$1 ")
+        // Convert non-time colons into commas for a natural pause.
+        sanitized = sanitized.replace(Regex("(?<!\\d):(?!\\d)"), ", ")
 
         sanitized = sanitized.replace(Regex("\\s+([,.!?;:])"), "$1")
-        sanitized = sanitized.replace(Regex("([.!?;:])(?!\\s|$)"), "$1 ")
+        sanitized = sanitized.replace(Regex("([.!?;])(?!\\s|$)"), "$1 ")
         sanitized = sanitized.replace(Regex("([,!?;:])\\1+"), "$1")
 
         return sanitized
