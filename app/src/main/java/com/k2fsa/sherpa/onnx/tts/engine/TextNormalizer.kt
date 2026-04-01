@@ -44,6 +44,11 @@ object TextNormalizer {
             sanitized = pattern.replace(sanitized, replacement)
         }
 
+        // Force pauses for line breaks: add a sentence stop when previous char is not punctuation.
+        sanitized = sanitized.replace(Regex("(?<![.!?,:;])\\s*[\\r\\n]+\\s*"), ". ")
+        // Remaining line breaks already follow punctuation, so collapse to a single space.
+        sanitized = sanitized.replace(Regex("\\s*[\\r\\n]+\\s*"), " ")
+
         // Convert spoken-pause dashes into commas for better mid-sentence prosody.
         sanitized = sanitized.replace(Regex("\\s+-\\s+"), ", ")
         sanitized = sanitized.replace(Regex("\\s+[–—]\\s+"), ", ")
